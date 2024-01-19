@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager as asynccontextmanager
+from math import ceil
 from typing import AsyncGenerator, ContextManager, TypeVar
 
 import anyio
-from anyio import CapacityLimiter
+from anyio import CapacityLimiter, Semaphore
 from starlette.concurrency import iterate_in_threadpool as iterate_in_threadpool  # noqa
 from starlette.concurrency import run_in_threadpool as run_in_threadpool  # noqa
 from starlette.concurrency import (  # noqa
@@ -10,6 +11,11 @@ from starlette.concurrency import (  # noqa
 )
 
 _T = TypeVar("_T")
+
+max_thread_pool_size = ceil(
+    anyio.to_thread.current_default_thread_limiter().total_tokens
+)
+sem = Semaphore(max_thread_pool_size - 1)
 
 
 @asynccontextmanager
@@ -24,7 +30,10 @@ async def contextmanager_in_threadpool(
     # works (1 is arbitrary)
     exit_limiter = CapacityLimiter(1)
     try:
-        yield await run_in_threadpool(cm.__enter__)
+        # Semaphore ensures there's always one thread left to call __exit__,
+        # avoiding deadlocks when all threads are busy
+        async with sem:
+            yield await run_in_threadpool(cm.__enter__)
     except Exception as e:
         ok = bool(
             await anyio.to_thread.run_sync(
